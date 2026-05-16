@@ -1,3 +1,4 @@
+from sqlalchemy.orm import Mapped
 from datetime import date, datetime
 from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Enum as SqlEnum
 from sqlalchemy.orm import relationship
@@ -35,11 +36,16 @@ class Employee(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     manager = relationship("Employee", remote_side="Employee.id")
-    leave_requests = relationship("LeaveRequest", back_populates="employee")
+    leave_requests = relationship(
+        "LeaveRequest", 
+        back_populates="employee", 
+        foreign_keys="[LeaveRequest.employee_id]"
+    )
     leave_balances = relationship("LeaveBalance", back_populates="employee")
 
 
 class LeaveRequest(Base):
+    
     __tablename__ = "leave_requests"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -54,9 +60,32 @@ class LeaveRequest(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    employee = relationship("Employee", back_populates="leave_requests", foreign_keys=[employee_id])
-    approver = relationship("Employee", foreign_keys=[approved_by])
+    employee : Mapped["Employee"] = relationship(
+        "Employee", 
+        back_populates="leave_requests", 
+        foreign_keys=[employee_id]
+    )
+    approver : Mapped["Employee"] = relationship("Employee", foreign_keys=[approved_by])
 
+    @property
+    def total_days(self) -> int:
+        return (self.end_date - self.start_date).days + 1
+
+    @property
+    def response(self):
+        from src.app import LeaveRequestOut
+
+        return LeaveRequestOut(
+            id=self.id,
+            employee_id=self.employee_id,
+            leave_type=self.leave_type,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            reason=self.reason,
+            status=self.status,
+            approved_by=self.approver.name if self.approver else None,
+            approved_at=self.approved_at.strftime("%d/%m/%Y %H:%M:%S") if self.approved_at else None
+        )
 
 class LeaveBalance(Base):
     __tablename__ = "leave_balances"

@@ -5,16 +5,22 @@ This is the entrypoint. Routes are defined but most business logic
 in services.py needs to be implemented to make everything work.
 """
 
+from src.current_user import get_current_user
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from src.service import LeaveError
+from src.services.leave_request import LeaveService
+from src.services.leave_balance import LeaveBalanceService
 from datetime import date
 from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.database import engine, get_db, Base
 from src.models import LeaveType, LeaveStatus
-from src import services
+from src import service
 
 Base.metadata.create_all(bind=engine)
 
@@ -35,6 +41,7 @@ class EmployeeOut(BaseModel):
 
 
 class LeaveBalanceOut(BaseModel):
+    id: int
     leave_type: LeaveType
     year: int
     total_days: float
@@ -46,12 +53,13 @@ class LeaveBalanceOut(BaseModel):
 
 
 class LeaveRequestCreate(BaseModel):
-    employee_id: int
     leave_type: LeaveType
     start_date: date
     end_date: date
     reason: Optional[str] = None
 
+class LeaveRequestStatusUpdate(BaseModel):
+    status: LeaveStatus
 
 class LeaveRequestOut(BaseModel):
     id: int
@@ -61,16 +69,11 @@ class LeaveRequestOut(BaseModel):
     end_date: date
     reason: Optional[str]
     status: LeaveStatus
-    approved_by: Optional[int]
+    approved_by: Optional[str]
     approved_at: Optional[str]
 
     class Config:
         from_attributes = True
-
-
-class LeaveRequestApprove(BaseModel):
-    decision: LeaveStatus = Field(description="approved or rejected")
-
 
 class PaginatedLeaveRequests(BaseModel):
     items: list[LeaveRequestOut]
@@ -90,26 +93,26 @@ def list_employees(db: Session = Depends(get_db)):
 @app.get("/employees/{employee_id}", response_model=dict)
 def get_employee(employee_id: int, db: Session = Depends(get_db)):
     from src.models import Employee
+
+    service = LeaveService(db)
+
     emp = db.query(Employee).filter(Employee.id == employee_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
-    balances = services.get_leave_balances(db, employee_id)
+    balances = service.get_leave_balances(employee_id)
     return {
         "employee": EmployeeOut.model_validate(emp),
         "leave_balances": [LeaveBalanceOut.model_validate(b) for b in balances],
     }
 
+@app.get("/employees/{employee_id}/leave-balances", response_model=list[LeaveBalanceOut])
+def get_balance(employee_id: int, year: Optional[int] = Query(None), db: Session = Depends(get_db)):
 
-@app.post("/leave-requests", response_model=LeaveRequestOut, status_code=201)
-def create_leave_request(body: LeaveRequestCreate, db: Session = Depends(get_db)):
-    try:
-        lr = services.create_leave_request(
-            db, employee_id=body.employee_id, leave_type=body.leave_type,
-            start_date=body.start_date, end_date=body.end_date, reason=body.reason,
-        )
-        return lr
-    except services.LeaveError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    service = LeaveBalanceService(db)
+    print(employee_id)
+
+    balances = service.get_leave_balances(employee_id=employee_id, year=year)
+    return [LeaveBalanceOut.model_validate(b) for b in balances]
 
 
 @app.get("/leave-requests", response_model=PaginatedLeaveRequests)
@@ -123,15 +126,27 @@ def list_leave_requests(
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    items, total = services.get_leave_requests(
-        db, employee_id=employee_id, status=status, leave_type=leave_type,
+    service = LeaveService(db)
+    items, total = service.get_leave_requests(
+        employee_id=employee_id, status=status, leave_type=leave_type,
         from_date=from_date, to_date=to_date, page=page, page_size=page_size,
     )
     return PaginatedLeaveRequests(
-        items=[LeaveRequestOut.model_validate(i) for i in items],
+        items=[LeaveRequestOut.model_validate(i.response) for i in items],
         total=total, page=page, page_size=page_size,
     )
 
+@app.post("/leave-requests", response_model=LeaveRequestOut, status_code=201)
+def create_leave_request(
+    body: LeaveRequestCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+    ):
+    service = LeaveService(db)
+
+    return service.create_leave_request(employee_id=current_user.id,
+     end_date=body.end_date, leave_type=body.leave_type,
+      reason=body.reason, start_date=body.start_date).response
 
 @app.get("/leave-requests/{leave_request_id}", response_model=LeaveRequestOut)
 def get_leave_request(leave_request_id: int, db: Session = Depends(get_db)):
@@ -139,43 +154,67 @@ def get_leave_request(leave_request_id: int, db: Session = Depends(get_db)):
     lr = db.query(LeaveRequest).filter(LeaveRequest.id == leave_request_id).first()
     if not lr:
         raise HTTPException(status_code=404, detail="Leave request not found")
-    return lr
+    return lr.response
 
 
-@app.post("/leave-requests/{leave_request_id}/review", response_model=LeaveRequestOut)
-def review_leave_request(
-    leave_request_id: int,
-    body: LeaveRequestApprove,
-    db: Session = Depends(get_db),
-):
-    try:
-        lr = services.approve_leave_request(
-            db, leave_request_id=leave_request_id, approver_id=1, decision=body.decision,
-        )
-        return lr
-    except services.LeaveError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+@app.put("/leave-requests/{leave_request_id}/status", response_model=LeaveRequestOut)
+def update_leave_request_status(leave_request_id: int, body: LeaveRequestStatusUpdate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+    service = LeaveService(db)
+
+    lr = None
+
+    match body.status:
+        case LeaveStatus.CANCELLED:
+            lr = service.cancel_leave_request(id=leave_request_id, employee_id=current_user.id)
+        case LeaveStatus.APPROVED:
+            lr = service.approve_leave_request(id=leave_request_id, approver_id=current_user.id)
+        case LeaveStatus.REJECTED:
+            lr = service.reject_leave_request(id=leave_request_id, approver_id=current_user.id)
+        case _:
+            raise LeaveError("Status not supported yet", 400)
+
+    return lr.response
 
 
-@app.post("/leave-requests/{leave_request_id}/cancel", response_model=LeaveRequestOut)
-def cancel_leave_request(leave_request_id: int, employee_id: int = Query(...), db: Session = Depends(get_db)):
-    try:
-        lr = services.cancel_leave_request(db, leave_request_id=leave_request_id, employee_id=employee_id)
-        return lr
-    except services.LeaveError as e:
-        raise HTTPException(status_code=422, detail=str(e))
 
+@app.exception_handler(LeaveError)
+async def leave_error_handler(request: Request, exc: LeaveError):
+    extra = exc.extra if exc.extra else None
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": "error",
+            "type": exc.__class__.__name__,
+            "message": str(exc),
+            "extra_info": extra
+        },
+    )
 
-@app.get("/leave-balances/{employee_id}", response_model=list[LeaveBalanceOut])
-def get_balance(employee_id: int, year: Optional[int] = Query(None), db: Session = Depends(get_db)):
-    balances = services.get_leave_balances(db, employee_id=employee_id, year=year)
-    return [LeaveBalanceOut.model_validate(b) for b in balances]
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # This transforms the Pydantic error into a custom format
+    errors = []
+    for error in exc.errors():
+        errors.append({
+            "field": error["loc"][-1], # Gets the field name
+            "message": error["msg"],
+            "type": error["type"]
+        })
+
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "status": "error",
+            "message": "Validation failed",
+            "errors": errors
+        },
+    )
 
 
 @app.on_event("startup")
 def on_startup():
     db = next(get_db())
     try:
-        services.seed_demo_data(db)
+        service.seed_demo_data(db)
     finally:
         db.close()

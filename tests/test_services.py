@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src.database import Base
 from src.models import LeaveType, LeaveStatus
-from src.services import (
+from src.service import (
     seed_demo_data,
     create_leave_request,
     approve_leave_request,
