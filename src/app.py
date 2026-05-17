@@ -189,8 +189,6 @@ async def update_leave_request_status(
     ):
     service = LeaveService(db)
 
-    await sleep(5)
-
     lr = None
 
     match body.status:
