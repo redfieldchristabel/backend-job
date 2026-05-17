@@ -1,15 +1,48 @@
 import unittest
 from datetime import date, timedelta
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
 from src.app import app
+from src.database import Base, get_db
+from src.service import seed_demo_data
+
+# Create in-memory SQLite engine for API testing
+engine = create_engine(
+    "sqlite:///:memory:",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def override_get_db():
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+app.dependency_overrides[get_db] = override_get_db
 
 class TestLeaveAPI(unittest.TestCase):
 
     def setUp(self):
+        # Create tables and seed data for each test to ensure a clean state
+        Base.metadata.create_all(bind=engine)
+        db = TestingSessionLocal()
+        seed_demo_data(db)
+        db.close()
+
         self.client = TestClient(app)
         # Assuming Bob's seed ID is 2 and Alice's seed ID is 1
         self.bob_headers = {"X-Current-User": "2"}
         self.alice_headers = {"X-Current-User": "1"}
+
+    def tearDown(self):
+        # Drop all tables to clean up between tests
+        Base.metadata.drop_all(bind=engine)
 
     def test_list_employees(self):
         resp = self.client.get("/employees")

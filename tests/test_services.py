@@ -97,3 +97,80 @@ class TestLeaveServices(unittest.TestCase):
         balances = self.balance_service.get_leave_balances(employee_id=self.bob.id)
         self.assertTrue(len(balances) > 0)
         self.assertEqual(balances[0].employee_id, self.bob.id)
+
+
+    def test_cancel_pending_leave_request_success(self):
+        """Verify that an employee can cancel their own PENDING request successfully."""
+        start = date.today() + timedelta(days=5)
+        end = date.today() + timedelta(days=6)
+        
+        # 1. Create a pending request
+        req = self.leave_service.create_leave_request(
+            employee_id=self.bob.id,
+            leave_type=LeaveType.ANNUAL,
+            start_date=start,
+            end_date=end
+        )
+        
+        # 2. Cancel the pending request
+        cancelled_req = self.leave_service.cancel_leave_request(id=req.id, employee_id=self.bob.id)
+        
+        self.assertEqual(cancelled_req.status, LeaveStatus.CANCELLED)
+
+    def test_cancel_leave_unauthorized_owner(self):
+        """Verify that an employee CANNOT cancel another employee's leave request."""
+        start = date.today() + timedelta(days=5)
+        end = date.today() + timedelta(days=6)
+        
+        # Bob creates a request
+        req = self.leave_service.create_leave_request(self.bob.id, LeaveType.ANNUAL, start, end)
+        
+        # Alice tries to cancel Bob's request (should raise LeaveError 403)
+        with self.assertRaises(LeaveError) as context:
+            self.leave_service.cancel_leave_request(id=req.id, employee_id=self.alice.id)
+            
+        self.assertEqual(context.exception.status_code, 403)
+
+    def test_cancel_approved_leave_restores_balance(self):
+        """Verify that cancelling an APPROVED leave request reverts used_days accurately."""
+        from src.models import LeaveBalance
+        
+        # 1. Find Bob's initial balance state
+        balance = self.db.query(LeaveBalance).filter(
+            LeaveBalance.employee_id == self.bob.id,
+            LeaveBalance.leave_type == LeaveType.ANNUAL
+        ).first()
+        initial_used_days = balance.used_days
+
+        # 2. Create a 3-day leave request
+        start = date.today() + timedelta(days=5)
+        end = date.today() + timedelta(days=7) # 3 days inclusive
+        req = self.leave_service.create_leave_request(self.bob.id, LeaveType.ANNUAL, start, end)
+        
+        # 3. Approve the request (which increments used_days balance)
+        self.leave_service.approve_leave_request(id=req.id, approver_id=self.alice.id)
+        self.db.commit()
+        self.assertEqual(balance.used_days, initial_used_days + 3)
+
+        # 4. Bob cancels the approved request
+        self.leave_service.cancel_leave_request(id=req.id, employee_id=self.bob.id)
+        self.db.commit()
+
+        # 5. CRUCIAL ASSERTION: used_days must return back to its original state
+        self.assertEqual(balance.used_days, initial_used_days)
+        self.assertEqual(req.status, LeaveStatus.CANCELLED)
+
+    def test_cancel_already_cancelled_leave_fails(self):
+        """Verify that attempting to cancel a request that is already CANCELLED throws an error."""
+        start = date.today() + timedelta(days=5)
+        end = date.today() + timedelta(days=6)
+        req = self.leave_service.create_leave_request(self.bob.id, LeaveType.ANNUAL, start, end)
+        
+        # First cancellation
+        self.leave_service.cancel_leave_request(id=req.id, employee_id=self.bob.id)
+        
+        # Second cancellation attempt should fail with 403
+        with self.assertRaises(LeaveError) as context:
+            self.leave_service.cancel_leave_request(id=req.id, employee_id=self.bob.id)
+            
+        self.assertEqual(context.exception.status_code, 403)

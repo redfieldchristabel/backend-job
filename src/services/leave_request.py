@@ -1,3 +1,4 @@
+from src.services.leave_balance import LeaveBalanceService
 from src.service import UnauthorizedApprovalError
 from src.service import LeaveNotFoundError
 from typing import Tuple
@@ -19,6 +20,7 @@ from datetime import date, datetime
 class LeaveService:
     def __init__(self, db: Session):
         self.db = db
+        self.leave_balance_service = LeaveBalanceService(db)
 
     def get_leave_requests(
         self,
@@ -66,19 +68,6 @@ class LeaveService:
 
         return items, total_count
 
-
-    def check_sufficient_balance(self, employee_id: int, leave_type: LeaveType, year: int, requested_days: int) -> LeaveBalance:
-        balance = self.db.query(LeaveBalance).filter(
-            LeaveBalance.employee_id == employee_id,
-            LeaveBalance.leave_type == leave_type,
-            LeaveBalance.year == year
-        ).first()
-
-        if not balance or (balance.remaining_days < requested_days):
-            raise InsufficientBalanceError(employee_id, leave_type, balance.remaining_days if balance else 0, requested_days)
-            
-        return balance
-
     def create_leave_request(
         self,
         employee_id: int,
@@ -88,8 +77,7 @@ class LeaveService:
         reason: Optional[str] = None,
     ) -> LeaveRequest:
 
-        print(start_date)
-        print(end_date)
+
         if start_date < date.today():
             raise LeaveError("Cannot create leave requests for past dates.")
         if start_date > end_date:
@@ -112,7 +100,7 @@ class LeaveService:
 
         requested_days = (end_date - start_date).days + 1
 
-        self.check_sufficient_balance(employee_id, leave_type, start_date.year, requested_days)
+        self.leave_balance_service.check_sufficient_balance(employee_id, leave_type, start_date.year, requested_days)
 
         new_request = LeaveRequest(
             employee_id=employee_id,
@@ -149,7 +137,7 @@ class LeaveService:
 
         requested_days = leave.total_days
 
-        balance = self.check_sufficient_balance(
+        balance = self.leave_balance_service.check_sufficient_balance(
             employee_id=leave.employee_id, 
             leave_type=leave.leave_type, 
             year=leave.start_date.year, 
@@ -199,13 +187,22 @@ class LeaveService:
         if request.status == LeaveStatus.CANCELLED:
             raise LeaveError("Leave request has already been cancelled.", 403)
 
-        if request.status != LeaveStatus.PENDING:
-            raise LeaveError("Only Pending request can be cancelled.", 403)        
+        if request.status not in [LeaveStatus.PENDING, LeaveStatus.APPROVED]:
+            raise LeaveError("Only Pending or Approved request can be cancelled.", 403)        
 
         if request.employee_id != employee_id:
             raise LeaveError("You are not authorized to cancel this leave request.", 403)
+        
+        if request.status == LeaveStatus.APPROVED:
+            self.leave_balance_service.revert_leave_days(
+                employee_id=request.employee_id,
+                leave_type=request.leave_type,
+                year=request.start_date.year,
+                days=request.total_days
+            )
 
         request.status = LeaveStatus.CANCELLED
+
         self.db.commit()
         self.db.refresh(request)
         return request
