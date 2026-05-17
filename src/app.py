@@ -5,6 +5,9 @@ This is the entrypoint. Routes are defined but most business logic
 in services.py needs to be implemented to make everything work.
 """
 
+from anyio import sleep
+from functools import wraps
+from src.services.lock import LockService
 from src.current_user import get_current_user
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -26,6 +29,25 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Kakitangan Leave Management API", version="0.1.0")
 
+lock_service = LockService()
+
+# ── Decorators ───────────────────────────────────────────────────────────────
+
+def lock_request(expire_seconds: int = 5):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # 1. Python inspects the route parameters automatically!
+            request: Request = kwargs.get("request")
+            
+            # 2. If it finds them, it handles the generation and safety injection rules
+            if request:
+                lock_key = f"{request.method}:{request.url.path}" # HTTP method plus full path
+                lock_service.acquire_and_track(request, lock_key, expire_seconds)
+                
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 # ── Schemas ──────────────────────────────────────────────────────────────
 
@@ -158,8 +180,16 @@ def get_leave_request(leave_request_id: int, db: Session = Depends(get_db)):
 
 
 @app.put("/leave-requests/{leave_request_id}/status", response_model=LeaveRequestOut)
-def update_leave_request_status(leave_request_id: int, body: LeaveRequestStatusUpdate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+@lock_request()
+async def update_leave_request_status(
+        request: Request,
+        leave_request_id: int, body: LeaveRequestStatusUpdate,
+        db: Session = Depends(get_db),
+        current_user = Depends(get_current_user)
+    ):
     service = LeaveService(db)
+
+    await sleep(5)
 
     lr = None
 
@@ -172,6 +202,7 @@ def update_leave_request_status(leave_request_id: int, body: LeaveRequestStatusU
             lr = service.reject_leave_request(id=leave_request_id, approver_id=current_user.id)
         case _:
             raise LeaveError("Status not supported yet", 400)
+    
 
     return lr.response
 
@@ -209,6 +240,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "errors": errors
         },
     )
+
+@app.middleware("http")
+async def release_lock_middleware(request: Request, call_next):
+    print("iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii")
+    response = await call_next(request)
+    if hasattr(request.state, "acquired_locks"):
+        for lock_key in request.state.acquired_locks:
+            lock_service.release_lock(lock_key)
+            
+    return response
 
 
 @app.on_event("startup")

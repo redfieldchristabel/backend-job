@@ -13,6 +13,15 @@ services:
       timeout: 10s
       retries: 3
 
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   toolbox:
     build: .
@@ -22,3 +31,6 @@ services:
     environment:
       - DATABASE_URL=sqlite:///kakitangan.db
     command: tail -f /dev/null
+
+volumes:
+  redis_data:
