@@ -91,6 +91,7 @@ class LeaveRequestOut(BaseModel):
     end_date: date
     reason: Optional[str]
     status: LeaveStatus
+    days: Optional[float] = None
     approved_by: Optional[str]
     approved_at: Optional[str]
 

@@ -1,3 +1,4 @@
+from src.services.calendar import CalendarService
 from src.services.leave_balance import LeaveBalanceService
 from src.service import UnauthorizedApprovalError
 from src.service import LeaveNotFoundError
@@ -21,6 +22,7 @@ class LeaveService:
     def __init__(self, db: Session):
         self.db = db
         self.leave_balance_service = LeaveBalanceService(db)
+        self.calender_service = CalendarService()
 
     def get_leave_requests(
         self,
@@ -98,7 +100,8 @@ class LeaveService:
         if overlap:
             raise OverlappingLeaveError(employee_id)
 
-        requested_days = (end_date - start_date).days + 1
+        requested_days = self.calender_service.calculate_working_days(start_date, end_date)
+        print("requested_days", requested_days)
 
         self.leave_balance_service.check_sufficient_balance(employee_id, leave_type, start_date.year, requested_days)
 
@@ -135,7 +138,7 @@ class LeaveService:
         if manager_id != approver_id:
             raise UnauthorizedApprovalError(leave.employee_id)
 
-        requested_days = leave.total_days
+        requested_days = leave.total_work_days
 
         balance = self.leave_balance_service.check_sufficient_balance(
             employee_id=leave.employee_id, 
@@ -198,7 +201,7 @@ class LeaveService:
                 employee_id=request.employee_id,
                 leave_type=request.leave_type,
                 year=request.start_date.year,
-                days=request.total_days
+                days=request.total_work_days
             )
 
         request.status = LeaveStatus.CANCELLED

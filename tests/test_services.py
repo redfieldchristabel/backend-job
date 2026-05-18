@@ -142,15 +142,15 @@ class TestLeaveServices(unittest.TestCase):
         ).first()
         initial_used_days = balance.used_days
 
-        # 2. Create a 3-day leave request
+        # 2. Create a leave request
         start = date.today() + timedelta(days=5)
-        end = date.today() + timedelta(days=7) # 3 days inclusive
+        end = date.today() + timedelta(days=7)
         req = self.leave_service.create_leave_request(self.bob.id, LeaveType.ANNUAL, start, end)
         
         # 3. Approve the request (which increments used_days balance)
         self.leave_service.approve_leave_request(id=req.id, approver_id=self.alice.id)
         self.db.commit()
-        self.assertEqual(balance.used_days, initial_used_days + 3)
+        self.assertEqual(balance.used_days, initial_used_days + req.total_work_days)
 
         # 4. Bob cancels the approved request
         self.leave_service.cancel_leave_request(id=req.id, employee_id=self.bob.id)
@@ -174,3 +174,21 @@ class TestLeaveServices(unittest.TestCase):
             self.leave_service.cancel_leave_request(id=req.id, employee_id=self.bob.id)
             
         self.assertEqual(context.exception.status_code, 403)
+
+
+    def test_leave_skips_real_malaysian_holidays(self):
+        """Verify that the CalendarService correctly calculates working days, skipping public holidays and weekends."""
+        from src.services.calendar import CalendarService
+        calendar_service = CalendarService()
+        
+        # May 1st 2026 (Labour Day) is a Friday (Public Holiday)
+        # May 2nd is Saturday (Weekend)
+        # May 3rd is Sunday (Weekend)
+        # May 4th is Monday (Working day)
+        start = date(2026, 5, 1)
+        end = date(2026, 5, 4)
+        
+        working_days = calendar_service.calculate_working_days(start, end)
+        
+        # Total span is 4 days, but it should only count 1 working day (May 4th)!
+        self.assertEqual(working_days, 1)

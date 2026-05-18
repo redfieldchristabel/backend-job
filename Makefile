@@ -1,13 +1,14 @@
-.PHONY: install run test lint clean
+.PHONY: install run test clean
 
 install:
-	pip install -r requirements.txt
+	docker compose build
 
 run:
-	uvicorn src.app:app --reload --host 0.0.0.0 --port 8000
+	docker compose up
 
 test:
-	python -m pytest tests/ -v
+	docker compose exec api python -m pytest tests/ -v
 
 clean:
-	rm -rf __pycache__ .pytest_cache *.db src/__pycache__ tests/__pycache__
+	docker compose down -v
+	rm -rf __pycache__ .pytest_cache *.db src/__pycache__ tests/__pycache__ src/services/__pycache__

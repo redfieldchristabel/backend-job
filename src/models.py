@@ -1,3 +1,4 @@
+from src.services.calendar import CalendarService
 from sqlalchemy.orm import Mapped
 from datetime import date, datetime
 from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Enum as SqlEnum
@@ -72,6 +73,10 @@ class LeaveRequest(Base):
         return (self.end_date - self.start_date).days + 1
 
     @property
+    def total_work_days(self) -> int:
+        return CalendarService().calculate_working_days(self.start_date, self.end_date)
+
+    @property
     def response(self):
         from src.app import LeaveRequestOut
 
@@ -83,6 +88,7 @@ class LeaveRequest(Base):
             end_date=self.end_date,
             reason=self.reason,
             status=self.status,
+            days=self.total_work_days,
             approved_by=self.approver.name if self.approver else None,
             approved_at=self.approved_at.strftime("%d/%m/%Y %H:%M:%S") if self.approved_at else None
         )
