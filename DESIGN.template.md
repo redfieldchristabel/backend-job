@@ -1,6 +1,6 @@
 # Design Document — Leave Management System
 
-**Author:** [Your Name]
+**Author:** Saiful Azhar
 **Date:** 2026-05-18
 
 ## 1. API Design
