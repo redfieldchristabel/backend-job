@@ -4,10 +4,10 @@ install:
 	docker compose build
 
 run:
-	docker compose up
+	docker compose up -d 
 
 test:
-	docker compose exec api python -m pytest tests/ -v
+	./test.sh
 
 clean:
 	docker compose down -v
